@@ -100,15 +100,28 @@ if st.session_state.extraction_done and st.session_state.df_clean is not None:
     m2.metric("Total Débits", f"{stats.get('total_debit', 0):,.0f} FCFA")
     m3.metric("Lignes à importer", len(df_display))
 
-    # --- SECTION GRAPHIQUES ---
+    
+   # --- SECTION GRAPHIQUES ---
     st.subheader("📊 Aperçu des flux de trésorerie")
+    
+    # On s'assure que les colonnes sont bien au format numérique pour le graphique
+    df_display['Débit'] = pd.to_numeric(df_display['Débit'], errors='coerce').fillna(0)
+    df_display['Crédit'] = pd.to_numeric(df_display['Crédit'], errors='coerce').fillna(0)
+    
+    # Groupement par date
     df_chart = df_display.groupby('Date')[['Débit', 'Crédit']].sum().reset_index()
-    fig = px.area(df_chart, x='Date', y=['Crédit', 'Débit'], 
+    
+    # Utilisation de px.line ou px.area sans barmode
+    fig = px.area(df_chart, 
+                  x='Date', 
+                  y=['Crédit', 'Débit'], 
                   title="Mouvements bancaires cumulés",
-                  color_discrete_map={"Débit": "#E74C3C", "Crédit": "#2ECC71"},
-                  barmode='group')
+                  color_discrete_map={"Débit": "#E74C3C", "Crédit": "#2ECC71"})
+    
+    # Amélioration du design du graphique
+    fig.update_layout(hovermode="x unified", yaxis_title="Montant (FCFA)")
+    
     st.plotly_chart(fig, use_container_width=True)
-
     # --- SECTION EXPORT ---
     st.divider()
     st.subheader("💾 Préparation du fichier Odoo")
