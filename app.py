@@ -160,7 +160,7 @@ if st.session_state.extraction_done and st.session_state.df_clean is not None:
 
     journal_id = st.number_input("ID du Journal Bancaire dans Odoo", value=8, min_value=1)
 
-    if st.button("🚀 Envoyer vers Odoo", type="primary", width="stretch"):
+    if st.button(" Envoyer vers Odoo", type="primary", width="stretch"):
         if not odoo_url:
             st.error("❌ Veuillez configurer l'URL du webhook dans les Secrets Streamlit")
         else:
