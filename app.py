@@ -81,7 +81,7 @@ st.markdown('<div class="main-header"><h1>🏦 SKAB Bank Statement Extractor</h1
 
 # ====================== EXTRACTION ======================
 if uploaded_file and not st.session_state.extraction_done and not st.session_state.show_confirm:
-    if st.button("🚀 Lancer l'extraction", type="primary", use_container_width=True):
+    if st.button("Lancer l'extraction", type="primary", use_container_width=True):
         st.session_state.pdf_bytes_cache = uploaded_file.read()
         st.session_state.show_confirm = True
         st.rerun()
