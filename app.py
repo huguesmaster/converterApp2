@@ -1,81 +1,41 @@
 """
-╔══════════════════════════════════════════════════════════════╗
-║         BANK STATEMENT EXTRACTOR — Streamlit                 ║
-║         Compatible : Toutes banques du Cameroun              ║
-║         Version : 4.3 — Intégration complète + Clé API       ║
-╚══════════════════════════════════════════════════════════════╝
+Bank Statement Extractor - Version Finale pour Odoo 18
+Utilise les Secrets Streamlit pour GEMINI_API_KEY et ODOO_WEBHOOK_URL
 """
 
 import streamlit as st
 import pandas as pd
+import requests
+import base64
+import io
 from datetime import datetime
 
 from extractor_gemini import GeminiExtractor
 from cleaner import DataCleaner
-from exporter import BankStatementExporter
 from bank_configs import get_bank_config
 
-# ====================== CONFIGURATION ======================
-st.set_page_config(
-    page_title="Bank Statement Extractor — Cameroun",
-    page_icon="🏦",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ====================== CONFIG ======================
+st.set_page_config(page_title="Bank Extractor - Odoo 18", page_icon="🏦", layout="wide")
 
-# ====================== CSS ======================
 st.markdown("""
 <style>
-    .main-header {
-        background: linear-gradient(135deg, #1B3A5C 0%, #2E75B6 100%);
-        padding: 2rem 2.5rem;
-        border-radius: 16px;
-        color: white;
-        margin-bottom: 2rem;
-        box-shadow: 0 8px 25px rgba(27,58,92,0.3);
-    }
-    .success-box {
-        background: #d4edda;
-        border-left: 5px solid #28a745;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 1rem 0;
-    }
-    .error-box {
-        background: #f8d7da;
-        border-left: 5px solid #dc3545;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 1rem 0;
-    }
-    .stat-card {
-        background: white;
-        border-radius: 12px;
-        padding: 1.2rem;
-        text-align: center;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.08);
-        border-top: 5px solid;
-    }
+    .main-header { background: linear-gradient(135deg, #1B3A5C, #2E75B6); padding: 2rem; border-radius: 16px; color: white; margin-bottom: 2rem; }
+    .success-box { background: #d4edda; border-left: 5px solid #28a745; padding: 1rem; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ====================== HELPER CLÉ GEMINI ======================
-def get_gemini_key() -> str:
-    """Récupère la clé API Gemini avec priorité : Secrets → Saisie manuelle"""
-    # 1. Depuis les Secrets Streamlit (recommandé en production)
-    try:
-        key = st.secrets.get("GEMINI_API_KEY", "")
-        if key and str(key).strip():
-            return str(key).strip()
-    except Exception:
-        pass
+def get_gemini_key():
+    return st.secrets.get("GEMINI_API_KEY", "") or st.session_state.get("gemini_key_input", "")
 
-    # 2. Depuis la saisie manuelle de l'utilisateur
-    return st.session_state.get("gemini_key_input", "").strip()
+def get_odoo_webhook_url():
+    return st.secrets.get("ODOO_WEBHOOK_URL", "")
+
+def get_odoo_journal_id():
+    return st.secrets.get("ODOO_JOURNAL_ID", 8)
 
 
-# ====================== SESSION STATE ======================
+# Session State
 if "extraction_done" not in st.session_state:
     st.session_state.update({
         "extraction_done": False,
@@ -83,238 +43,143 @@ if "extraction_done" not in st.session_state:
         "df_clean": None,
         "stats": None,
         "account_info": None,
-        "file_name": "",
         "debug_logs": "",
-        "debug_entries": [],
-        "banque_selectionnee": "Financial House S.A",
+        "banque_selectionnee": "UNICS",
         "pdf_bytes_cache": None,
     })
 
 
 # ====================== SIDEBAR ======================
 with st.sidebar:
-    st.markdown("""
-    <div style="text-align:center; padding:1rem 0;">
-        <h2>🏦 Bank Extractor</h2>
-        <p style="color:#666; font-size:0.9rem;">Toutes banques du Cameroun</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("🏦 Bank Extractor")
+    st.caption("Odoo 18 Integration")
 
-    st.divider()
+    uploaded_file = st.file_uploader("📄 Relevé PDF", type=["pdf"])
 
-    uploaded_file = st.file_uploader("📄 Chargez votre relevé PDF", type=["pdf"])
-    if uploaded_file:
-        st.success(f"✅ {uploaded_file.name}")
-
-    st.divider()
-
-    # Banque
-    banque_sel = st.selectbox(
-        "🏦 Banque émettrice",
-        options=[
-            "Financial House S.A", "BGFI Bank", "UNICS", "CEPAC", 
-            "ADVANS", "MUPECI", "SCB Cameroun", "BICEC", "UBA Cameroun", 
-            "Autre banque"
-        ]
-    )
+    banque_sel = st.selectbox("Banque", [
+        "Financial House S.A", "BGFI Bank", "UNICS", "CEPAC", "ADVANS",
+        "MUPECI", "SCB Cameroun", "BICEC", "UBA Cameroun", "Autre banque"
+    ])
     st.session_state.banque_selectionnee = banque_sel
-    config = get_bank_config(banque_sel)
 
-    with st.expander("📋 Configuration banque", expanded=False):
-        st.markdown(f"**{config.emoji} {config.nom}**")
-        st.caption(f"Références : {', '.join(config.col_ref[:4])}")
+    method = st.radio("Méthode", ["vision", "hybrid"],
+                     format_func=lambda x: {"vision": "🔭 Gemini Vision", "hybrid": "⚡ Hybride"}[x])
 
-    st.divider()
-
-    # Méthode
-    method = st.radio(
-        "🤖 Méthode d'extraction",
-        options=["vision", "hybrid", "pdfplumber"],
-        format_func=lambda x: {
-            "vision": "🔭 Gemini Vision (Recommandé)",
-            "hybrid": "⚡ Gemini Hybride",
-            "pdfplumber": "📄 pdfplumber (Gratuit)"
-        }[x]
-    )
-
-    # Clé API Gemini
     if method in ("vision", "hybrid"):
-        st.divider()
-        st.markdown("#### 🔑 Clé API Gemini")
-
-        current_key = get_gemini_key()
-        if current_key:
-            st.success("✅ Clé API Gemini détectée et active")
-            st.caption("Utilisée depuis les Secrets Streamlit")
-        else:
-            st.warning("⚠️ Clé API non configurée")
-            key_input = st.text_input(
-                "Saisissez votre clé API Gemini",
-                type="password",
-                placeholder="AIzaSyxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-                help="Obtenez une clé gratuite sur https://aistudio.google.com/app/apikey"
-            )
-            st.session_state["gemini_key_input"] = key_input
-            st.markdown("[Obtenir une clé API](https://aistudio.google.com/app/apikey)", unsafe_allow_html=True)
-
-    st.divider()
+        st.text_input("Clé API Gemini", type="password", key="gemini_key_input")
 
     if st.button("🔄 Nouvelle extraction", use_container_width=True):
-        for key in list(st.session_state.keys()):
-            if key not in ["gemini_key_input"]:
-                del st.session_state[key]
+        for k in list(st.session_state.keys()):
+            if k not in ["gemini_key_input"]:
+                del st.session_state[k]
         st.rerun()
 
 
 # ====================== HEADER ======================
-st.markdown("""
-<div class="main-header">
-    <h1>🏦 Bank Statement Extractor</h1>
-    <p style="opacity:0.9;">Extraction intelligente de relevés bancaires camerounais</p>
-</div>
-""", unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🏦 Bank Statement Extractor</h1><p>Export vers Odoo 18</p></div>', unsafe_allow_html=True)
 
 
 # ====================== EXTRACTION ======================
 if uploaded_file and not st.session_state.extraction_done and not st.session_state.show_confirm:
-    if st.button(f"🚀 Lancer l'extraction — {st.session_state.banque_selectionnee}", 
-                 type="primary", use_container_width=True):
+    if st.button("🚀 Lancer l'extraction", type="primary", use_container_width=True):
         st.session_state.pdf_bytes_cache = uploaded_file.read()
         st.session_state.show_confirm = True
         st.rerun()
 
-if st.session_state.show_confirm and uploaded_file:
-    banque = st.session_state.banque_selectionnee
-    current_method = method
-
-    if st.button("✅ Confirmer et lancer l'extraction", type="primary", use_container_width=True):
-        progress_bar = st.progress(0)
-        status = st.empty()
-
-        def _progress(step: int, msg: str):
-            progress_bar.progress(min(step / 100, 1.0))
-            status.info(msg)
-
-        extractor = None
-        try:
-            _progress(10, f"Initialisation Gemini pour {banque}...")
-
-            if current_method in ("vision", "hybrid"):
-                api_key = get_gemini_key()
-                if not api_key:
-                    st.error("❌ Clé API Gemini requise pour ce mode.")
-                    st.stop()
-
+if st.session_state.show_confirm:
+    if st.button("✅ Confirmer extraction", type="primary", use_container_width=True):
+        with st.spinner("Extraction en cours..."):
+            try:
                 extractor = GeminiExtractor(
-                    api_key=api_key,
-                    mode=current_method,
-                    banque_nom=banque,
-                    progress_callback=_progress,
+                    api_key=get_gemini_key(),
+                    mode=method,
+                    banque_nom=st.session_state.banque_selectionnee,
                     verbose_debug=True
                 )
                 df_raw = extractor.extract(st.session_state.pdf_bytes_cache)
-            else:
-                st.warning("Mode pdfplumber non encore implémenté dans cette version.")
-                st.stop()
 
-            # Nettoyage
-            _progress(85, "Nettoyage et structuration des données...")
-            cleaner = DataCleaner()
-            df_clean = cleaner.clean(df_raw, banque_nom=banque)
-            stats = cleaner.get_statistics(df_clean)
+                cleaner = DataCleaner()
+                df_clean = cleaner.clean(df_raw, banque_nom=st.session_state.banque_selectionnee)
+                stats = cleaner.get_statistics(df_clean)
 
-            # Sauvegarde en session
-            st.session_state.df_clean = df_clean
-            st.session_state.stats = stats
-            st.session_state.account_info = {
-                "banque": banque,
-                "banque_emoji": get_bank_config(banque).emoji,
-                "extraction_date": datetime.now().strftime("%d/%m/%Y à %H:%M")
-            }
-            st.session_state.extraction_done = True
-            st.session_state.show_confirm = False
-
-            if extractor:
+                st.session_state.df_clean = df_clean
+                st.session_state.stats = stats
+                st.session_state.account_info = {"banque": st.session_state.banque_selectionnee}
+                st.session_state.extraction_done = True
+                st.session_state.show_confirm = False
                 st.session_state.debug_logs = extractor.get_debug_logs()
 
-            progress_bar.progress(1.0)
-            status.success("✅ Extraction terminée avec succès !")
-            st.rerun()
-
-        except Exception as e:
-            progress_bar.empty()
-            status.empty()
-            st.error(f"❌ Erreur lors de l'extraction : {str(e)}")
-            if extractor and hasattr(extractor, "get_debug_logs"):
-                with st.expander("🔍 Logs de débogage", expanded=True):
-                    st.text(extractor.get_debug_logs())
+                st.success("✅ Extraction terminée !")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erreur : {str(e)}")
 
 
 # ====================== RÉSULTATS ======================
 if st.session_state.extraction_done and st.session_state.df_clean is not None:
     df = st.session_state.df_clean
     stats = st.session_state.stats or {}
-    info = st.session_state.account_info or {}
 
-    st.markdown(f"""
-    <div class="success-box">
-        ✅ <b>{len(df)}</b> lignes extraites avec succès — 
-        {info.get('banque_emoji', '')} <b>{info.get('banque', '')}</b><br>
-        📅 {info.get('extraction_date', '')}
-    </div>
-    """, unsafe_allow_html=True)
+    st.success(f"{len(df)} lignes extraites")
 
-    # Statistiques
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Total Crédits", f"{stats.get('total_credit', 0):,.0f} FCFA")
-    with c2:
-        st.metric("Total Débits", f"{stats.get('total_debit', 0):,.0f} FCFA")
-    with c3:
-        st.metric("Flux Net", f"{stats.get('net', 0):,.0f} FCFA")
-    with c4:
-        st.metric("Transactions", stats.get('total_transactions', 0))
+    col1, col2, col3 = st.columns(3)
+    with col1: st.metric("Crédits", f"{stats.get('total_credit',0):,.0f} FCFA")
+    with col2: st.metric("Débits", f"{stats.get('total_debit',0):,.0f} FCFA")
+    with col3: st.metric("Lignes", len(df))
 
-    # Tableau
-    st.subheader("📋 Données extraites")
-    st.dataframe(
-        df.style.format({
-            "Débit": "{:,.0f}".format,
-            "Crédit": "{:,.0f}".format,
-            "Solde": "{:,.0f}".format
-        }),
-        use_container_width=True,
-        height=600
+    st.dataframe(df, use_container_width=True, height=500)
+
+    # ====================== EXPORT CSV ODOO ======================
+    csv_buffer = io.StringIO()
+    export_df = df.rename(columns={
+        'Date': 'date', 'Libellé': 'name', 'Référence': 'ref',
+        'Débit': 'amount_debit', 'Crédit': 'amount_credit'
+    })
+    if 'date' in export_df.columns:
+        export_df['date'] = pd.to_datetime(export_df['date'], format='%d/%m/%Y', errors='coerce').dt.strftime('%Y-%m-%d')
+
+    export_df.to_csv(csv_buffer, index=False)
+
+    st.download_button(
+        label="📥 Télécharger CSV pour Odoo",
+        data=csv_buffer.getvalue(),
+        file_name=f"releve_{st.session_state.banque_selectionnee}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv"
     )
 
-    # Export
-    col1, col2 = st.columns(2)
-    with col1:
-        exporter = BankStatementExporter()
-        excel_bytes = exporter.to_excel(df, stats, info)
-        st.download_button(
-            label="📥 Télécharger en Excel",
-            data=excel_bytes,
-            file_name=f"releve_{info.get('banque', 'banque').replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+    # ====================== ENVOI WEBHOOK ======================
+    st.subheader("🔗 Envoi vers Odoo")
+    odoo_url = get_odoo_webhook_url()
 
-    with col2:
-        if st.button("🔄 Nouvelle extraction", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                if key not in ["gemini_key_input"]:
-                    del st.session_state[key]
-            st.rerun()
+    if odoo_url:
+        st.success("✅ URL Webhook chargée depuis les Secrets")
+    else:
+        odoo_url = st.text_input("URL Webhook Odoo", placeholder="https://...")
 
-    # Logs
-    with st.expander("🔍 Logs de débogage"):
-        st.text(st.session_state.get("debug_logs", "Aucun log disponible"))
+    journal_id = st.number_input("ID Journal Bancaire", value=get_odoo_journal_id(), min_value=1)
 
-# Footer
-st.markdown("---")
-st.markdown(
-    "<p style='text-align:center; color:#888; font-size:0.85rem;'>"
-    "Bank Statement Extractor v4.3 — Powered by Google Gemini AI</p>",
-    unsafe_allow_html=True
-)
+    if st.button("🚀 Envoyer vers Odoo", type="primary"):
+        if not odoo_url:
+            st.error("URL Webhook manquante")
+        else:
+            with st.spinner("Envoi en cours..."):
+                try:
+                    payload = {
+                        "name": f"releve_{st.session_state.banque_selectionnee}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        "bank_name": st.session_state.banque_selectionnee,
+                        "date": datetime.now().strftime('%Y-%m-%d'),
+                        "csv_data": base64.b64encode(csv_buffer.getvalue().encode('utf-8')).decode('utf-8'),
+                        "journal_id": journal_id
+                    }
+
+                    response = requests.post(odoo_url, json=payload, timeout=30)
+
+                    if response.status_code in (200, 201):
+                        st.success("✅ Envoyé avec succès à Odoo !")
+                        st.json(response.json())
+                    else:
+                        st.error(f"Erreur Odoo ({response.status_code})")
+                except Exception as e:
+                    st.error(f"Erreur : {str(e)}")
+
+st.caption("Bank Statement Extractor v4.5 — Odoo 18 Enterprise")
