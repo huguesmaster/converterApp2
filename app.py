@@ -1,5 +1,5 @@
 """
-Bank Statement Extractor - Version Finale pour Odoo 18
+SKAB Bank Statement Extractor - Version Finale pour Odoo 18
 Utilise les Secrets Streamlit pour GEMINI_API_KEY et ODOO_WEBHOOK_URL
 """
 
@@ -51,7 +51,7 @@ if "extraction_done" not in st.session_state:
 
 # ====================== SIDEBAR ======================
 with st.sidebar:
-    st.title("🏦 Bank Extractor")
+    st.title("🏦 SKAB Bank Extractor")
     st.caption("Odoo 18 Integration")
 
     uploaded_file = st.file_uploader("📄 Relevé PDF", type=["pdf"])
@@ -76,7 +76,7 @@ with st.sidebar:
 
 
 # ====================== HEADER ======================
-st.markdown('<div class="main-header"><h1>🏦 Bank Statement Extractor</h1><p>Export vers Odoo 18</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🏦 SKAB Bank Statement Extractor</h1><p>Export vers Odoo 18</p></div>', unsafe_allow_html=True)
 
 
 # ====================== EXTRACTION ======================
